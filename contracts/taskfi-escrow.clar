@@ -1,255 +1,242 @@
-;; TaskFi Core Contract - Main task lifecycle management
-;; Handles task creation, acceptance, delivery submission, and completion
-(use-trait fungible-token-trait 'SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard.sip-010-trait)
-(impl-trait 'SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard.sip-010-trait)
-(use-trait .taskfi-utils)
-(use-trait .taskfi-escrow)
-(use-trait .taskfi-staking)
-(use-trait .taskfi-reputation)
-(use-trait .taskfi-dispute)
-(use-trait .taskfi-admin)
-;; Error codes imported from utils
-(define-constant ERR-NOT-FOUND (contract-call? .taskfi-utils get-error-not-found))
-(define-constant ERR-UNAUTHORIZED (contract-call? .taskfi-utils get-error-unauthorized))
-(define-constant ERR-INVALID-INPUT (contract-call? .taskfi-utils get-error-invalid-input))
-(define-constant ERR-ALREADY-EXISTS (contract-call? .taskfi-utils get-error-already-exists))
-(define-constant ERR-DEADLINE-PASSED (contract-call? .taskfi-utils get-error-deadline-passed))
-(define-constant ERR-INSUFFICIENT-STAKE (contract-call? .taskfi-utils get-error-insufficient-stake))
-(define-constant ERR-TASK-NOT-ACCEPTED (contract-call? .taskfi-utils get-error-task-not-accepted))
-(define-constant ERR-TASK-COMPLETED (contract-call? .taskfi-utils get-error-task-completed))
-(define-constant ERR-INSUFFICIENT-REPUTATION (contract-call? .taskfi-utils get-error-insufficient-reputation))
-;; Task status constants
-(define-constant TASK-STATUS-OPEN u1)
-(define-constant TASK-STATUS-ACCEPTED u2)
-(define-constant TASK-STATUS-SUBMITTED u3)
-(define-constant TASK-STATUS-COMPLETED u4)
-(define-constant TASK-STATUS-DISPUTED u5)
-(define-constant TASK-STATUS-CANCELLED u6)
-;; Protocol constants
-(define-constant MAX-TASK-DESCRIPTION-LENGTH u256)
-(define-constant MIN-TASK-REWARD u1000000) ;; 1 STX minimum
-(define-constant MAX-DELIVERY-CID-LENGTH u64)
-;; Task counter for unique IDs
-(define-data-var task-id-counter uint u0)
-;; Task data structure
-(define-map tasks uint {
-requester: principal,
-worker: (optional principal),
-title: (string-ascii 64),
-description: (string-ascii 256),
-reward: uint,
-deadline: uint,
-min-reputation: uint,
-status: uint,
-delivery-cid: (optional (buff 64)),
-created-at: uint,
-accepted-at: (optional uint),
-submitted-at: (optional uint),
-completed-at: (optional uint)
-})
-;; Principal to tasks mapping for efficient lookups
-(define-map requester-tasks principal (list 50 uint))
-(define-map worker-tasks principal (list 50 uint))
-;; Create a new task with reward escrow
-;; @param title: Task title (max 64 chars)
-;; @param description: Task description (max 256 chars)
-;; @param reward: Reward amount in microSTX
-;; @param deadline: Block height deadline
-;; @param min-reputation: Minimum reputation required for workers
-;; @returns: Task ID on success
-(define-public (create-task (title (string-ascii 64))
-(description (string-ascii 256))
-(reward uint)
-(deadline uint)
-(min-reputation uint))
-(let ((task-id (+ (var-get task-id-counter) u1))
-(current-block-height block-height))
-;; Validate inputs
-(asserts! (> (len title) u0) (err ERR-INVALID-INPUT))
-(asserts! (>= (len description) u1) (err ERR-INVALID-INPUT))
-(asserts! (>= reward MIN-TASK-REWARD) (err ERR-INVALID-INPUT))
-(asserts! (> deadline current-block-height) (err ERR-INVALID-INPUT))
-;; Check if protocol is paused
-(asserts! (is-eq (contract-call? .taskfi-admin is-paused) false) (err ERR-UNAUTHORIZED))
+;; TaskFi Escrow Contract - Manages reward deposits and releases
+;; Holds funds securely until task completion or dispute resolution
 
-;; Deposit reward into escrow
-(try! (contract-call? .taskfi-escrow deposit-reward tx-sender task-id reward))
+;; Error codes
+(define-constant ERR-NOT-FOUND (err u404))
+(define-constant ERR-UNAUTHORIZED (err u401))
+(define-constant ERR-INVALID-INPUT (err u400))
+(define-constant ERR-ALREADY-EXISTS (err u409))
+(define-constant ERR-INSUFFICIENT-FUNDS (err u410))
 
-;; Create task record
-(map-set tasks task-id {
-  requester: tx-sender,
-  worker: none,
-  title: title,
-  description: description,
-  reward: reward,
-  deadline: deadline,
-  min-reputation: min-reputation,
-  status: TASK-STATUS-OPEN,
-  delivery-cid: none,
-  created-at: current-block-height,
-  accepted-at: none,
-  submitted-at: none,
-  completed-at: none
-})
+;; Authorized callers (core, dispute, admin contracts)
+(define-constant AUTHORIZED-CORE .taskfi-core)
+(define-constant AUTHORIZED-DISPUTE .taskfi-dispute)
+(define-constant AUTHORIZED-ADMIN .taskfi-admin)
 
-;; Update requester task list
-(let ((current-tasks (default-to (list) (map-get? requester-tasks tx-sender))))
-  (map-set requester-tasks tx-sender (unwrap! (as-max-len? (append current-tasks task-id) u50) (err ERR-INVALID-INPUT))))
+;; Escrow status constants
+(define-constant ESCROW-STATUS-DEPOSITED u1)
+(define-constant ESCROW-STATUS-RELEASED u2)
+(define-constant ESCROW-STATUS-REFUNDED u3)
 
-;; Increment task counter
-(var-set task-id-counter task-id)
+;; Maximum reward amount to prevent overflow
+(define-constant MAX-REWARD-AMOUNT u1000000000000) ;; 1M STX
 
-(ok task-id)))
-;; Worker accepts a task by staking collateral
-;; @param task-id: ID of task to accept
-;; @param stake-amount: Amount to stake as collateral
+;; Escrow records mapping task ID to escrow details
+(define-map escrows
+    uint
+    {
+        depositor: principal,
+        amount: uint,
+        status: uint,
+        deposited-at: uint,
+        released-at: (optional uint),
+        recipient: (optional principal),
+    }
+)
+
+;; Principal balance tracking for security
+(define-map depositor-balances
+    principal
+    uint
+)
+(define-data-var total-escrowed uint u0)
+
+;; Deposit reward into escrow for a specific task
+;; @param depositor: Principal depositing the reward
+;; @param task-id: Unique task identifier
+;; @param amount: Amount to escrow in microSTX
 ;; @returns: Success confirmation
-(define-public (accept-task (task-id uint) (stake-amount uint))
-(let ((task-data (unwrap! (map-get? tasks task-id) (err ERR-NOT-FOUND))))
-;; Validate task can be accepted
-(asserts! (is-eq (get status task-data) TASK-STATUS-OPEN) (err ERR-INVALID-INPUT))
-(asserts! (<= block-height (get deadline task-data)) (err ERR-DEADLINE-PASSED))
-(asserts! (is-none (get worker task-data)) (err ERR-ALREADY-EXISTS))
-;; Check worker reputation meets minimum
-(let ((worker-reputation (contract-call? .taskfi-reputation get-reputation tx-sender)))
-  (asserts! (>= worker-reputation (get min-reputation task-data)) (err ERR-INSUFFICIENT-REPUTATION)))
-
-;; Check minimum stake requirement from admin
-(let ((min-stake (contract-call? .taskfi-admin get-min-stake)))
-  (asserts! (>= stake-amount min-stake) (err ERR-INSUFFICIENT-STAKE)))
-
-;; Stake collateral
-(try! (contract-call? .taskfi-staking stake tx-sender stake-amount))
-
-;; Update task with worker
-(map-set tasks task-id (merge task-data {
-  worker: (some tx-sender),
-  status: TASK-STATUS-ACCEPTED,
-  accepted-at: (some block-height)
-}))
-
-;; Update worker task list
-(let ((current-tasks (default-to (list) (map-get? worker-tasks tx-sender))))
-  (map-set worker-tasks tx-sender (unwrap! (as-max-len? (append current-tasks task-id) u50) (err ERR-INVALID-INPUT))))
-
-(ok true)))
-;; Worker submits delivery for task completion
-;; @param task-id: ID of task
-;; @param delivery-cid: IPFS content identifier for delivery
-;; @returns: Success confirmation
-(define-public (submit-delivery (task-id uint) (delivery-cid (buff 64)))
-(let ((task-data (unwrap! (map-get? tasks task-id) (err ERR-NOT-FOUND))))
-;; Validate submission
-(asserts! (is-eq (some tx-sender) (get worker task-data)) (err ERR-UNAUTHORIZED))
-(asserts! (is-eq (get status task-data) TASK-STATUS-ACCEPTED) (err ERR-TASK-NOT-ACCEPTED))
-(asserts! (<= block-height (get deadline task-data)) (err ERR-DEADLINE-PASSED))
-(asserts! (<= (len delivery-cid) MAX-DELIVERY-CID-LENGTH) (err ERR-INVALID-INPUT))
-(asserts! (> (len delivery-cid) u0) (err ERR-INVALID-INPUT))
-;; Update task with delivery
-(map-set tasks task-id (merge task-data {
-  delivery-cid: (some delivery-cid),
-  status: TASK-STATUS-SUBMITTED,
-  submitted-at: (some block-height)
-}))
-
-(ok true)))
-;; Requester accepts delivery and completes task
-;; @param task-id: ID of task to complete
-;; @returns: Success confirmation
-(define-public (requester-accept (task-id uint))
-(let ((task-data (unwrap! (map-get? tasks task-id) (err ERR-NOT-FOUND))))
-;; Validate acceptance
-(asserts! (is-eq tx-sender (get requester task-data)) (err ERR-UNAUTHORIZED))
-(asserts! (is-eq (get status task-data) TASK-STATUS-SUBMITTED) (err ERR-INVALID-INPUT))
-(asserts! (is-some (get worker task-data)) (err ERR-TASK-NOT-ACCEPTED))
-(let ((worker (unwrap! (get worker task-data) (err ERR-TASK-NOT-ACCEPTED))))
-  ;; Release escrow to worker
-  (try! (contract-call? .taskfi-escrow release-reward task-id worker))
-
-  ;; Return worker's stake
-  (try! (contract-call? .taskfi-staking release-stake worker))
-
-  ;; Increase worker reputation
-  (try! (contract-call? .taskfi-reputation increase-reputation worker (get reward task-data)))
-
-  ;; Update task status
-  (map-set tasks task-id (merge task-data {
-    status: TASK-STATUS-COMPLETED,
-    completed-at: (some block-height)
-  }))
-
-  (ok true))))
-;; Requester disputes delivery, initiating dispute process
-;; @param task-id: ID of task to dispute
-;; @returns: Success confirmation
-(define-public (requester-dispute (task-id uint))
-(let ((task-data (unwrap! (map-get? tasks task-id) (err ERR-NOT-FOUND))))
-;; Validate dispute
-(asserts! (is-eq tx-sender (get requester task-data)) (err ERR-UNAUTHORIZED))
-(asserts! (is-eq (get status task-data) TASK-STATUS-SUBMITTED) (err ERR-INVALID-INPUT))
-(asserts! (is-some (get worker task-data)) (err ERR-TASK-NOT-ACCEPTED))
-;; Open dispute
-(try! (contract-call? .taskfi-dispute open-dispute task-id))
-
-;; Update task status
-(map-set tasks task-id (merge task-data {
-  status: TASK-STATUS-DISPUTED
-}))
-
-(ok true)))
-;; Finalize task after dispute resolution
-;; @param task-id: ID of task to finalize
-;; @param winner: Principal who wins the dispute
-;; @returns: Success confirmation
-(define-public (finalize-task (task-id uint) (winner principal))
-(let ((task-data (unwrap! (map-get? tasks task-id) (err ERR-NOT-FOUND))))
-;; Only dispute contract can call this
-(asserts! (is-eq contract-caller .taskfi-dispute) (err ERR-UNAUTHORIZED))
-(asserts! (is-eq (get status task-data) TASK-STATUS-DISPUTED) (err ERR-INVALID-INPUT))
-(let ((worker (unwrap! (get worker task-data) (err ERR-TASK-NOT-ACCEPTED)))
-      (requester (get requester task-data)))
-
-  ;; Handle dispute outcome
-  (if (is-eq winner worker)
-    ;; Worker wins - release reward and stake, increase reputation
+(define-public (deposit-reward
+        (depositor principal)
+        (task-id uint)
+        (amount uint)
+    )
     (begin
-      (try! (contract-call? .taskfi-escrow release-reward task-id worker))
-      (try! (contract-call? .taskfi-staking release-stake worker))
-      (try! (contract-call? .taskfi-reputation increase-reputation worker (/ (get reward task-data) u2))))
-    ;; Requester wins - refund reward, slash worker stake, decrease reputation
-    (begin
-      (try! (contract-call? .taskfi-escrow refund-reward task-id requester))
-      (try! (contract-call? .taskfi-staking slash-stake worker))
-      (try! (contract-call? .taskfi-reputation decrease-reputation worker (/ (get reward task-data) u4)))))
+        ;; Verify caller authorization
+        (asserts!
+            (or
+                (is-eq contract-caller AUTHORIZED-CORE)
+                (is-eq contract-caller AUTHORIZED-ADMIN)
+            )
+            ERR-UNAUTHORIZED
+        )
+        ;; Validate inputs
+        (asserts! (> amount u0) ERR-INVALID-INPUT)
+        (asserts! (<= amount MAX-REWARD-AMOUNT) ERR-INVALID-INPUT)
+        (asserts! (is-none (map-get? escrows task-id)) ERR-ALREADY-EXISTS)
 
-  ;; Update task status
-  (map-set tasks task-id (merge task-data {
-    status: TASK-STATUS-COMPLETED,
-    completed-at: (some block-height)
-  }))
+        ;; Transfer STX from depositor to this contract
+        (try! (stx-transfer? amount depositor (as-contract tx-sender)))
 
-  (ok true))))
-;; Get task details by ID
-;; @param task-id: ID of task
-;; @returns: Task data or none
-(define-read-only (get-task (task-id uint))
-(map-get? tasks task-id))
-;; Get tasks created by a requester
-;; @param requester: Principal of requester
-;; @returns: List of task IDs
-(define-read-only (get-requester-tasks (requester principal))
-(default-to (list) (map-get? requester-tasks requester)))
-;; Get tasks accepted by a worker
-;; @param worker: Principal of worker
-;; @returns: List of task IDs
-(define-read-only (get-worker-tasks (worker principal))
-(default-to (list) (map-get? worker-tasks worker)))
-;; Get current task ID counter
-;; @returns: Current task ID counter value
-(define-read-only (get-task-counter)
-(var-get task-id-counter))
-;; Check if task exists
-;; @param task-id: ID to check
-;; @returns: True if task exists
-(define-read-only (task-exists (task-id uint))
-(is-some (map-get? tasks task-id)))
+        ;; Create escrow record
+        (map-set escrows task-id {
+            depositor: depositor,
+            amount: amount,
+            status: ESCROW-STATUS-DEPOSITED,
+            deposited-at: stacks-block-height,
+            released-at: none,
+            recipient: none,
+        })
+
+        ;; Update depositor balance tracking
+        (let ((current-balance (default-to u0 (map-get? depositor-balances depositor))))
+            (map-set depositor-balances depositor (+ current-balance amount))
+        )
+
+        ;; Update total escrowed amount
+        (var-set total-escrowed (+ (var-get total-escrowed) amount))
+
+        (ok true)
+    )
+)
+
+;; Release escrowed reward to specified recipient
+;; @param task-id: Task identifier for escrow
+;; @param recipient: Principal to receive the funds
+;; @returns: Success confirmation
+(define-public (release-reward
+        (task-id uint)
+        (recipient principal)
+    )
+    (let ((escrow-data (unwrap! (map-get? escrows task-id) ERR-NOT-FOUND)))
+        ;; Verify caller authorization
+        (asserts!
+            (or
+                (is-eq contract-caller AUTHORIZED-CORE)
+                (is-eq contract-caller AUTHORIZED-DISPUTE)
+            )
+            ERR-UNAUTHORIZED
+        )
+        ;; Validate escrow status
+        (asserts! (is-eq (get status escrow-data) ESCROW-STATUS-DEPOSITED)
+            ERR-INVALID-INPUT
+        )
+
+        ;; Transfer funds from contract to recipient
+        (try! (as-contract (stx-transfer? (get amount escrow-data) tx-sender recipient)))
+
+        ;; Update escrow record
+        (map-set escrows task-id
+            (merge escrow-data {
+                status: ESCROW-STATUS-RELEASED,
+                released-at: (some stacks-block-height),
+                recipient: (some recipient),
+            })
+        )
+
+        ;; Update depositor balance tracking
+        (let ((current-balance (default-to u0
+                (map-get? depositor-balances (get depositor escrow-data))
+            )))
+            (map-set depositor-balances (get depositor escrow-data)
+                (if (>= current-balance (get amount escrow-data))
+                    (- current-balance (get amount escrow-data))
+                    u0
+                ))
+        )
+
+        ;; Update total escrowed amount
+        (let ((current-total (var-get total-escrowed)))
+            (var-set total-escrowed
+                (if (>= current-total (get amount escrow-data))
+                    (- current-total (get amount escrow-data))
+                    u0
+                ))
+        )
+
+        (ok true)
+    )
+)
+
+;; Refund escrowed reward back to original depositor
+;; @param task-id: Task identifier for escrow
+;; @param refund-to: Principal to receive refund (should be original depositor)
+;; @returns: Success confirmation
+(define-public (refund-reward
+        (task-id uint)
+        (refund-to principal)
+    )
+    (let ((escrow-data (unwrap! (map-get? escrows task-id) ERR-NOT-FOUND)))
+        ;; Verify caller authorization
+        (asserts!
+            (or
+                (is-eq contract-caller AUTHORIZED-CORE)
+                (is-eq contract-caller AUTHORIZED-DISPUTE)
+                (is-eq contract-caller AUTHORIZED-ADMIN)
+            )
+            ERR-UNAUTHORIZED
+        )
+        ;; Validate escrow status and refund recipient
+        (asserts! (is-eq (get status escrow-data) ESCROW-STATUS-DEPOSITED)
+            ERR-INVALID-INPUT
+        )
+        (asserts! (is-eq refund-to (get depositor escrow-data)) ERR-UNAUTHORIZED)
+
+        ;; Transfer funds from contract back to depositor
+        (try! (as-contract (stx-transfer? (get amount escrow-data) tx-sender refund-to)))
+
+        ;; Update escrow record
+        (map-set escrows task-id
+            (merge escrow-data {
+                status: ESCROW-STATUS-REFUNDED,
+                released-at: (some stacks-block-height),
+                recipient: (some refund-to),
+            })
+        )
+
+        ;; Update depositor balance tracking
+        (let ((current-balance (default-to u0
+                (map-get? depositor-balances (get depositor escrow-data))
+            )))
+            (map-set depositor-balances (get depositor escrow-data)
+                (if (>= current-balance (get amount escrow-data))
+                    (- current-balance (get amount escrow-data))
+                    u0
+                ))
+        )
+
+        ;; Update total escrowed amount
+        (let ((current-total (var-get total-escrowed)))
+            (var-set total-escrowed
+                (if (>= current-total (get amount escrow-data))
+                    (- current-total (get amount escrow-data))
+                    u0
+                ))
+        )
+
+        (ok true)
+    )
+)
+
+;; Get escrow details for a task
+;; @param task-id: Task identifier
+;; @returns: Escrow data or none
+(define-read-only (get-escrow (task-id uint))
+    (map-get? escrows task-id)
+)
+
+;; Get depositor's total escrowed balance
+;; @param depositor: Principal to check balance for
+;; @returns: Total escrowed amount
+(define-read-only (get-depositor-balance (depositor principal))
+    (default-to u0 (map-get? depositor-balances depositor))
+)
+
+;; Get total amount currently held in escrow
+;; @returns: Total escrowed amount across all tasks
+(define-read-only (get-total-escrowed)
+    (var-get total-escrowed)
+)
+
+;; Check if escrow exists for task
+;; @param task-id: Task identifier to check
+;; @returns: True if escrow exists
+(define-read-only (escrow-exists (task-id uint))
+    (is-some (map-get? escrows task-id))
+)
+
+;; Get contract's STX balance for verification
+;; @returns: Contract STX balance
+(define-read-only (get-contract-balance)
+    (stx-get-balance (as-contract tx-sender))
+)
