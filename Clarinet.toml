@@ -1,56 +1,74 @@
 [project]
-name = 'taskfi-clarity'
-description = ''
+name = 'clarity-hourbank'
+description = 'HourBank - Time-based service marketplace on Stacks'
 authors = []
 telemetry = true
 cache_dir = './.cache'
 requirements = []
-[contracts.taskfi-utils]
-path = 'contracts/taskfi-utils.clar'
+
+[contracts.sip010-trait]
+path = 'contracts/sip010-trait.clar'
 clarity_version = 3
 epoch = 3.1
 
-[contracts.taskfi-admin]
-path = 'contracts/taskfi-admin.clar'
+[contracts.time-token]
+path = 'contracts/time-token.clar'
 clarity_version = 3
 epoch = 3.1
-depends_on = ['taskfi-utils']
+depends_on = ['sip010-trait']
 
-[contracts.taskfi-governance]
-path = 'contracts/taskfi-governance.clar'
+[contracts.user-registry]
+path = 'contracts/user-registry.clar'
 clarity_version = 3
 epoch = 3.1
-depends_on = ['taskfi-utils', 'taskfi-admin']
 
-[contracts.taskfi-reputation]
-path = 'contracts/taskfi-reputation.clar'
+[contracts.skill-registry]
+path = 'contracts/skill-registry.clar'
 clarity_version = 3
 epoch = 3.1
-depends_on = ['taskfi-utils', 'taskfi-admin']
 
-[contracts.taskfi-dispute]
-path = 'contracts/taskfi-dispute.clar'
+[contracts.reputation]
+path = 'contracts/reputation.clar'
 clarity_version = 3
 epoch = 3.1
-depends_on = ['taskfi-utils', 'taskfi-admin', 'taskfi-reputation']
 
-[contracts.taskfi-staking]
-path = 'contracts/taskfi-staking.clar'
+[contracts.escrow]
+path = 'contracts/escrow.clar'
 clarity_version = 3
 epoch = 3.1
-depends_on = ['taskfi-utils', 'taskfi-admin']
+depends_on = ['sip010-trait']
 
-[contracts.taskfi-escrow]
-path = 'contracts/taskfi-escrow.clar'
+[contracts.booking-manager]
+path = 'contracts/booking-manager.clar'
 clarity_version = 3
 epoch = 3.1
-depends_on = ['taskfi-utils', 'taskfi-admin']
 
-[contracts.taskfi-core]
-path = 'contracts/taskfi-core.clar'
+[contracts.dispute-resolver]
+path = 'contracts/dispute-resolver.clar'
 clarity_version = 3
 epoch = 3.1
-depends_on = ['taskfi-utils', 'taskfi-admin', 'taskfi-reputation', 'taskfi-dispute', 'taskfi-staking', 'taskfi-escrow', 'taskfi-governance']
+
+[contracts.analytics]
+path = 'contracts/analytics.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.governance]
+path = 'contracts/governance.clar'
+clarity_version = 3
+epoch = 3.1
+depends_on = ['reputation']
+[contracts.analytics]
+path = 'contracts/analytics.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.governance]
+path = 'contracts/governance.clar'
+clarity_version = 3
+epoch = 3.1
+depends_on = ['reputation']
+
 [repl.analysis]
 passes = ['check_checker']
 
