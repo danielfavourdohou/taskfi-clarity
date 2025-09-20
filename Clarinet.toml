@@ -1,52 +1,51 @@
 [project]
-name = 'clarity-hourbank'
-description = 'HourBank - Time-based service marketplace on Stacks'
+name = 'taskfi-clarity'
+description = 'TaskFi - Decentralized task marketplace on Stacks'
 authors = []
 telemetry = true
 cache_dir = './.cache'
 requirements = []
 
-[contracts.sip010-trait]
-path = 'contracts/sip010-trait.clar'
+[contracts.taskfi-core]
+path = 'contracts/taskfi-core.clar'
 clarity_version = 3
 epoch = 3.1
 
-[contracts.time-token]
-path = 'contracts/time-token.clar'
-clarity_version = 3
-epoch = 3.1
-depends_on = ['sip010-trait']
-
-[contracts.user-registry]
-path = 'contracts/user-registry.clar'
+[contracts.taskfi-escrow]
+path = 'contracts/taskfi-escrow.clar'
 clarity_version = 3
 epoch = 3.1
 
-[contracts.skill-registry]
-path = 'contracts/skill-registry.clar'
+[contracts.taskfi-reputation]
+path = 'contracts/taskfi-reputation.clar'
 clarity_version = 3
 epoch = 3.1
 
-[contracts.reputation]
-path = 'contracts/reputation.clar'
+[contracts.taskfi-staking]
+path = 'contracts/taskfi-staking.clar'
 clarity_version = 3
 epoch = 3.1
 
-[contracts.escrow]
-path = 'contracts/escrow.clar'
-clarity_version = 3
-epoch = 3.1
-depends_on = ['sip010-trait']
-
-[contracts.booking-manager]
-path = 'contracts/booking-manager.clar'
+[contracts.taskfi-dispute]
+path = 'contracts/taskfi-dispute.clar'
 clarity_version = 3
 epoch = 3.1
 
-[contracts.dispute-resolver]
-path = 'contracts/dispute-resolver.clar'
+[contracts.taskfi-admin]
+path = 'contracts/taskfi-admin.clar'
 clarity_version = 3
 epoch = 3.1
+
+[contracts.taskfi-utils]
+path = 'contracts/taskfi-utils.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.taskfi-governance]
+path = 'contracts/taskfi-governance.clar'
+clarity_version = 3
+epoch = 3.1
+depends_on = ['taskfi-reputation']
 
 [contracts.analytics]
 path = 'contracts/analytics.clar'
@@ -57,17 +56,6 @@ epoch = 3.1
 path = 'contracts/governance.clar'
 clarity_version = 3
 epoch = 3.1
-depends_on = ['reputation']
-[contracts.analytics]
-path = 'contracts/analytics.clar'
-clarity_version = 3
-epoch = 3.1
-
-[contracts.governance]
-path = 'contracts/governance.clar'
-clarity_version = 3
-epoch = 3.1
-depends_on = ['reputation']
 
 [repl.analysis]
 passes = ['check_checker']
